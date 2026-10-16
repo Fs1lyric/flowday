@@ -284,7 +284,7 @@ impl App {
         }
         for p in self.projects.clone() {
             let selected = self.view == View::Project(p.id);
-            let r = ui.selectable_label(selected, RichText::new(format!("●  {}", p.name)).color(if selected { theme::INK } else { theme::INK_2 }));
+            let r = ui.selectable_label(selected, RichText::new(format!("     {}", p.name)).color(if selected { theme::INK } else { theme::INK_2 }));
             let dot = r.rect.left_center() + egui::vec2(10.0, 0.0);
             ui.painter().circle_filled(dot, 4.0, theme::hex(&p.color));
             if r.clicked() {
@@ -370,7 +370,7 @@ impl App {
         if self.view != View::Done {
             let edit = ui.add(
                 egui::TextEdit::singleline(&mut self.quick)
-                    .hint_text("＋ Add a task: Ship release #Work @deep !1 tomorrow 10am 1h")
+                    .hint_text("+  Add a task: Ship release #Work @deep !1 tomorrow 10am 1h")
                     .desired_width(f32::INFINITY)
                     .margin(egui::vec2(10.0, 8.0)),
             );
@@ -513,7 +513,7 @@ impl App {
             if ui.button("›").clicked() {
                 self.shift_day(1);
             }
-            ui.label(RichText::new(list::day_label(self.day, today())).strong());
+            ui.label(RichText::new(self.day.format("%a %-d %b").to_string()).strong());
         });
         ui.add_space(6.0);
         let selected = self.detail.as_ref().map(|d| d.id);
