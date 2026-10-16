@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Flowday
+GenericName=Planner
+Comment=Tasks, time blocks and Claude in one place
+Exec=flowday
+Icon=flowday
+Terminal=false
+Categories=Office;ProjectManagement;Calendar;
+Keywords=tasks;todo;planner;calendar;akiflow;
+StartupWMClass=flowday
+Actions=Plan;
+
+[Desktop Action Plan]
+Name=Plan my day
+Exec=flowday --plan

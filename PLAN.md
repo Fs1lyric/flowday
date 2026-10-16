@@ -37,6 +37,15 @@ Out of scope for v1: mobile apps, team sharing, booking links (Calendi already h
 6. install.sh, desktop entry, README.
 
 ## Progress
-- 2026-10-16, session 1: core crate. quickadd parser (9 tests) and store (12 tests) pass, clippy clean.
-  `tests/schedule.rs` is written; `src/schedule.rs` (free_slots, auto_schedule, Hours/Slot/Want) is NOT written yet,
-  so the next step is to write it and run the tests. Build with `nice -n 19 cargo test -j 2` (the user's PC runs hot).
+- 2026-10-16, session 1: core crate (quick-add parser, store).
+- 2026-10-16, session 2: all six phases built. Scheduler + day planner in core; the egui app (lists, day calendar with
+  drag/move/resize blocks, task pane, Ctrl K, plan-my-day and shutdown rituals); `crates/ai` (Messages API over ureq,
+  claude-opus-5-5 with adaptive thinking and server-side fallbacks, 11 tools, the turn loop saving every message to the
+  chat table); `crates/sync` (GitHub, Linear, Notion, Gmail starred, Google Calendar pull + block push via loopback
+  OAuth); keyring secrets; install.sh (downloads the CI binary), desktop entry, README.
+- Builds and tests run in GitHub Actions only (`.github/workflows/ci.yml`); the release job uploads the binary.
+
+## Not done / ideas
+- Week view of the calendar (only a single day column today).
+- Streaming Claude replies (the panel shows a spinner, then the whole reply).
+- Integrations are pull-only except Google Calendar blocks; completing a GitHub/Linear item in Flowday doesn't close it there.
