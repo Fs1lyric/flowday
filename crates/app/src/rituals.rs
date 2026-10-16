@@ -3,10 +3,10 @@
 //! left, write a line about the day).
 
 use crate::{list, theme};
-use chrono::{Days, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{Days, NaiveDate, NaiveDateTime, Timelike};
 use eframe::egui::{self, Id, RichText};
 use flowday_core::model::{Status, Task, TaskPatch, View};
-use flowday_core::schedule::{auto_schedule, free_slots, Hours, Slot, Want};
+use flowday_core::plan::{hours, propose};
 use flowday_core::store::Store;
 use std::collections::BTreeSet;
 
@@ -25,44 +25,6 @@ pub enum Outcome {
     Open,
     Changed,
     Close,
-}
-
-/// Work hours from the `hours` setting (`09:00-18:00`).
-pub fn hours(store: &Store) -> Hours {
-    let parse = |s: &str| NaiveTime::parse_from_str(s.trim(), "%H:%M").ok();
-    store
-        .setting("hours")
-        .ok()
-        .flatten()
-        .and_then(|v| {
-            let (a, b) = v.split_once('-')?;
-            Some(Hours { start: parse(a)?, end: parse(b)? })
-        })
-        .unwrap_or_default()
-}
-
-pub fn buffer(store: &Store) -> u32 {
-    store.setting("buffer_min").ok().flatten().and_then(|v| v.parse().ok()).unwrap_or(5)
-}
-
-/// Where today's unscheduled tasks would go: free time is work hours minus events
-/// and blocks already on the calendar, from now on.
-pub fn propose(store: &Store, now: NaiveDateTime) -> flowday_core::store::Result<Vec<(i64, NaiveDateTime)>> {
-    let day = now.date();
-    let mut busy: Vec<Slot> = store.events_on(day)?.iter().filter(|e| !e.all_day).map(|e| Slot::new(e.start, e.end)).collect();
-    let today = store.list(&View::Today, day)?;
-    for t in store.blocks_on(day)? {
-        if let Some(start) = t.start() {
-            busy.push(Slot::new(start, start + chrono::Duration::minutes(i64::from(t.duration_min))));
-        }
-    }
-    let free = free_slots(day, hours(store), &busy, Some(now));
-    let wants: Vec<Want> = today
-        .iter()
-        .filter(|t| t.time.is_none())
-        .map(|t| Want { id: t.id, minutes: t.duration_min, priority: t.priority, deadline: t.deadline })
-        .collect();
-    Ok(auto_schedule(&wants, &free, buffer(store)))
 }
 
 impl Ritual {
@@ -256,33 +218,4 @@ fn shutdown_ui(ui: &mut egui::Ui, store: &Store, today: NaiveDate, note: &mut St
         out = Outcome::Close;
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use flowday_core::model::NewTask;
-
-    #[test]
-    fn proposal_fills_free_time_around_events_and_blocks() {
-        let store = Store::open_in_memory().unwrap();
-        store.set_setting("hours", "09:00-12:00").unwrap();
-        store.set_setting("buffer_min", "0").unwrap();
-        let day = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
-        let at = |h, m| day.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap());
-        let blocked = store.add_task(&NewTask { title: "standup".into(), date: Some(day), ..Default::default() }).unwrap();
-        store.schedule(blocked.id, at(9, 0), 30).unwrap();
-        let a = store.add_task(&NewTask { title: "a".into(), date: Some(day), duration_min: Some(60), ..Default::default() }).unwrap();
-        let b = store.add_task(&NewTask { title: "b".into(), date: Some(day), priority: 3, ..Default::default() }).unwrap();
-        let plan = propose(&store, at(8, 0)).unwrap();
-        assert_eq!(plan, vec![(b.id, at(9, 30)), (a.id, at(10, 0))]);
-    }
-
-    #[test]
-    fn hours_fall_back_to_nine_to_six() {
-        let store = Store::open_in_memory().unwrap();
-        assert_eq!(hours(&store), Hours::default());
-        store.set_setting("hours", "08:30-16:00").unwrap();
-        assert_eq!(hours(&store).start, NaiveTime::from_hms_opt(8, 30, 0).unwrap());
-    }
 }

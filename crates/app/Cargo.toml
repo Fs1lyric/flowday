@@ -9,3 +9,7 @@ license.workspace = true
 flowday-core = { path = "../core" }
 chrono.workspace = true
 eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+flowday-ai = { path = "../ai" }
+flowday-sync = { path = "../sync" }
+serde_json.workspace = true
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

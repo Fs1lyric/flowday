@@ -1,10 +1,13 @@
 //! Flowday, the desktop app.
 
+mod chat;
 mod day;
 mod detail;
 mod list;
 mod palette;
 mod rituals;
+mod secrets;
+mod settings;
 mod theme;
 
 use chrono::{Days, Local, NaiveDate, NaiveDateTime};
@@ -15,7 +18,11 @@ use flowday_core::quickadd;
 use flowday_core::store::Store;
 use palette::{Command, Palette};
 use rituals::Ritual;
+use settings::Settings;
 use std::path::PathBuf;
+use std::sync::mpsc::{channel, Receiver};
+
+type SyncReport = Vec<(&'static str, Result<String, String>)>;
 
 struct App {
     store: Store,
@@ -34,6 +41,12 @@ struct App {
     palette: Option<Palette>,
     ritual: Option<Ritual>,
     new_project: Option<String>,
+    chat: chat::Chat,
+    settings: Option<Settings>,
+    sync_rx: Option<Receiver<SyncReport>>,
+    sync_now: bool,
+    last_sync: Option<std::time::Instant>,
+    sync_report: SyncReport,
     stale: bool,
     loaded_at: std::time::Instant,
     scroll_to: Option<f32>,
@@ -86,6 +99,12 @@ impl App {
             palette: None,
             ritual: None,
             new_project: None,
+            chat: chat::Chat::new(),
+            settings: None,
+            sync_rx: None,
+            sync_now: false,
+            last_sync: None,
+            sync_report: Vec::new(),
             stale: true,
             loaded_at: std::time::Instant::now(),
             scroll_to: Some(8.0 * day::HOUR_PX),
@@ -171,7 +190,9 @@ impl App {
             Command::Add(text) => self.add_quick(&text),
             Command::PlanDay => self.ritual = Some(Ritual::plan(&self.store, today())),
             Command::Shutdown => self.ritual = Some(Ritual::shutdown(&self.store, today())),
-            Command::Chat | Command::Sync | Command::Settings => {}
+            Command::Chat => self.chat.focus(),
+            Command::Sync => self.sync_now = true,
+            Command::Settings => self.settings = Some(Settings::new(&self.store)),
             Command::NewProject(name) => {
                 let color = theme::SWATCHES[self.projects.len() % theme::SWATCHES.len()];
                 if let Some(p) = self.report(self.store.create_project(&name, color)) {
@@ -188,7 +209,14 @@ impl App {
         if ctx.input(|i| i.key_pressed(Key::Escape)) && self.palette.is_none() && self.ritual.is_none() {
             self.detail = None;
         }
-        if self.palette.is_some() || self.ritual.is_some() || ctx.memory(|m| m.focused().is_some()) {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::J)) {
+            if self.chat.open {
+                self.chat.open = false;
+            } else {
+                self.chat.focus();
+            }
+        }
+        if self.palette.is_some() || self.ritual.is_some() || self.settings.is_some() || ctx.memory(|m| m.focused().is_some()) {
             return;
         }
         let pressed = |k| ctx.input(|i| i.key_pressed(k));
@@ -283,7 +311,27 @@ impl App {
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
             ui.add_space(10.0);
-            ui.label(RichText::new("Ctrl K for everything").size(11.0).color(theme::INK_3));
+            ui.label(RichText::new("Ctrl K for everything · Ctrl J for Claude").size(11.0).color(theme::INK_3));
+            if self.sync_rx.is_some() {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new("Syncing…").size(11.0).color(theme::INK_3));
+                });
+            } else if !self.sync_report.is_empty() {
+                let failed: Vec<String> = self.sync_report.iter().filter_map(|(n, r)| r.as_ref().err().map(|e| format!("{n}: {e}"))).collect();
+                let ok: Vec<String> = self.sync_report.iter().filter_map(|(n, r)| r.as_ref().ok().map(|m| format!("{n}: {m}"))).collect();
+                let (text, color) = if failed.is_empty() { ("Synced ✔", theme::INK_3) } else { ("Sync problem ⚠", theme::WARN) };
+                let r = ui.add(egui::Label::new(RichText::new(text).size(11.0).color(color)).sense(egui::Sense::click()));
+                if r.on_hover_text([ok, failed].concat().join("\n")).clicked() {
+                    self.sync_now = true;
+                }
+            }
+            if ui.button("⚙  Settings").clicked() {
+                self.run(Command::Settings);
+            }
+            if ui.button("✨  Ask Claude").clicked() {
+                self.chat.focus();
+            }
             if ui.button("🌙  Shutdown").clicked() {
                 self.run(Command::Shutdown);
             }
@@ -328,6 +376,10 @@ impl App {
             );
             if std::mem::take(&mut self.focus_quick) {
                 edit.request_focus();
+            }
+            if !self.quick.trim().is_empty() && ui.small_button("✨ Let Claude add this").on_hover_text("For anything the quick-add syntax can't say").clicked() {
+                let text = std::mem::take(&mut self.quick);
+                self.chat.ask(ui.ctx(), &self.store, data_path(), format!("Add this to my tasks: {text}"));
             }
             if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                 let text = std::mem::take(&mut self.quick);
@@ -416,6 +468,38 @@ impl App {
         }
     }
 
+    /// Runs the integrations on a worker every ten minutes, or when asked.
+    fn sync(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.sync_rx {
+            if let Ok(report) = rx.try_recv() {
+                self.sync_report = report;
+                self.sync_rx = None;
+                self.stale = true;
+            }
+            return;
+        }
+        let due = self.last_sync.is_none_or(|t| t.elapsed().as_secs() >= 600);
+        if !(std::mem::take(&mut self.sync_now) || due) {
+            return;
+        }
+        self.last_sync = Some(std::time::Instant::now());
+        if !settings::any_integration(&self.store) {
+            return;
+        }
+        let cfg = settings::sync_config(&self.store);
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let report = match Store::open(&data_path()) {
+                Ok(store) => flowday_sync::run_all(&store, &cfg, now()),
+                Err(e) => vec![("Sync", Err(e.to_string()))],
+            };
+            let _ = tx.send(report);
+            ctx.request_repaint();
+        });
+        self.sync_rx = Some(rx);
+    }
+
     fn calendar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(14.0);
         ui.horizontal(|ui| {
@@ -462,7 +546,18 @@ impl eframe::App for App {
             .frame(egui::Frame::new().fill(theme::SIDEBAR).inner_margin(egui::Margin::symmetric(12, 0)))
             .show(ui, |ui| self.sidebar(ui));
 
-        let wide = ctx.content_rect().width() > 1000.0;
+        if self.chat.poll() {
+            self.stale = true;
+        }
+        if self.chat.open {
+            egui::Panel::right("chat")
+                .resizable(true)
+                .default_size(360.0)
+                .frame(egui::Frame::new().fill(theme::SURFACE).inner_margin(egui::Margin::symmetric(12, 0)))
+                .show(ui, |ui| self.chat.show(ui, &self.store, data_path()));
+        }
+        self.sync(&ctx);
+        let wide = ctx.content_rect().width() > 1000.0 + if self.chat.open { 360.0 } else { 0.0 };
         if wide || self.detail.is_none() {
             egui::Panel::right("calendar")
                 .resizable(true)
@@ -480,6 +575,7 @@ impl eframe::App for App {
             match out {
                 detail::Outcome::Nothing => {}
                 detail::Outcome::Changed => self.stale = true,
+                detail::Outcome::Ask(text) => self.chat.ask(&ctx, &self.store, data_path(), text),
                 detail::Outcome::Close => self.detail = None,
                 detail::Outcome::Deleted => {
                     self.detail = None;
@@ -515,6 +611,12 @@ impl eframe::App for App {
                 }
             }
         }
+        if let Some(s) = self.settings.as_mut() {
+            if s.show(&ctx, &self.store) {
+                self.settings = None;
+                self.sync_now = true;
+            }
+        }
         if let Some(r) = self.ritual.as_mut() {
             match r.show(&ctx, &self.store, now()) {
                 rituals::Outcome::Open => {}
@@ -537,7 +639,7 @@ fn main() -> eframe::Result {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--plan" => plan = true,
-            "--add" => add = Some(args.collect::<Vec<_>>().join(" ")),
+            "--add" => add = Some(args.by_ref().collect::<Vec<_>>().join(" ")),
             _ => {
                 eprintln!("{USAGE}");
                 std::process::exit(2);

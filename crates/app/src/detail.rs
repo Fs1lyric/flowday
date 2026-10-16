@@ -21,6 +21,8 @@ pub struct Detail {
 
 pub enum Outcome {
     Nothing,
+    /// Hand this request to Claude.
+    Ask(String),
     Changed,
     Close,
     Deleted,
@@ -102,6 +104,9 @@ impl Detail {
                 self.report(r);
                 out = Outcome::Changed;
             }
+            if ui.button("✨ Break down").on_hover_text("Claude splits it into subtasks").clicked() {
+                out = Outcome::Ask(format!("Break task #{} \"{}\" into a few concrete subtasks (create them with parent_id {}) and suggest a total duration.", t.id, t.title, t.id));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("✕").on_hover_text("Close (Esc)").clicked() {
                     out = Outcome::Close;
@@ -112,7 +117,7 @@ impl Detail {
                 }
             });
         });
-        if matches!(out, Outcome::Deleted | Outcome::Close) {
+        if matches!(out, Outcome::Deleted | Outcome::Close | Outcome::Ask(_)) {
             return out;
         }
         ui.add_space(6.0);
