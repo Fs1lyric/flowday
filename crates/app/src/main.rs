@@ -681,6 +681,9 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
+            // Bigger text and icons on a 1080p screen; UI_ZOOM=1 gives the old size.
+            let zoom = std::env::var("UI_ZOOM").ok().and_then(|z| z.parse::<f32>().ok()).unwrap_or(1.25);
+            cc.egui_ctx.set_zoom_factor(zoom.clamp(0.5, 3.0));
             let mut app = App::new(store);
             if plan {
                 app.run(Command::PlanDay);
